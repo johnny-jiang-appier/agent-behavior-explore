@@ -39,7 +39,7 @@ def _parse_json(text: str) -> dict:
     raise ValueError(f"Could not parse JSON from LLM response: {text[:200]}")
 
 
-def generate_json(system_prompt: str, user_prompt: str) -> tuple[dict, dict | None]:
+def generate_json(system_prompt: str, user_prompt: str, model: str | None = None) -> tuple[dict, dict | None]:
     """Send prompt to LLM and return (parsed_json, token_usage)."""
     cfg = get_config()
     messages = [
@@ -50,7 +50,7 @@ def generate_json(system_prompt: str, user_prompt: str) -> tuple[dict, dict | No
     last_err = None
     for attempt in range(1, _MAX_RETRIES + 1):
         kwargs = {
-            "model": cfg.litellm_model,
+            "model": model or cfg.litellm_model,
             "messages": messages,
             "temperature": 0,
         }

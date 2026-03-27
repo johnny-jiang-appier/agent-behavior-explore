@@ -12,6 +12,7 @@ from rich.console import Console
 from rich.live import Live
 
 from auth.jwt_manager import get_jwt
+from client.a2a import A2AClient
 from client.orchestrator import OrchestratorClient
 from config import get_config
 from dashboard import DashboardState, ScenarioState, ScenarioStatus, make_progress_callback, render_dashboard
@@ -70,13 +71,16 @@ def save_result(result: dict) -> None:
     logger.info("Result saved: %s", out_file)
 
 
-async def run_one(scenario: dict, cfg, jwt_token: str, progress_cb=None) -> dict:
-    """Run a single scenario end-to-end."""
-    name = scenario["name"]
-    if not progress_cb:
-        logger.info("=== Starting scenario: %s ===", name)
-
-    client = OrchestratorClient(
+def _create_client(cfg, mode: str, jwt_token: str | None = None):
+    """Create client based on mode. Returns (client, session_id_coroutine_or_str)."""
+    if mode == "a2a":
+        return A2AClient(
+            base_url=cfg.campaign_agent_url,
+            eam_project_id=cfg.eam_project_id,
+            user_email=cfg.user_id,
+            jwt=jwt_token,
+        )
+    return OrchestratorClient(
         base_url=cfg.orchestrator_url,
         app_name=cfg.app_name,
         user_id=cfg.user_id,
@@ -85,8 +89,21 @@ async def run_one(scenario: dict, cfg, jwt_token: str, progress_cb=None) -> dict
         langfuse_project_id=cfg.langfuse_project_id,
     )
 
+
+async def run_one(scenario: dict, cfg, jwt_token: str | None, progress_cb=None, mode: str = "orchestrator") -> dict:
+    """Run a single scenario end-to-end."""
+    name = scenario["name"]
+    if not progress_cb:
+        logger.info("=== Starting scenario: %s ===", name)
+
+    client = _create_client(cfg, mode, jwt_token)
+
     try:
-        session_id = await client.create_session()
+        # A2A create_session is sync; orchestrator is async
+        if mode == "a2a":
+            session_id = client.create_session()
+        else:
+            session_id = await client.create_session()
 
         result = await run_scenario(
             client=client,
@@ -112,7 +129,7 @@ async def run_one(scenario: dict, cfg, jwt_token: str, progress_cb=None) -> dict
         raise
 
 
-async def run_all(scenarios: list[dict], parallel: int, jwt_tokens: list[str], state: DashboardState | None = None) -> list[dict]:
+async def run_all(scenarios: list[dict], parallel: int, jwt_tokens: list[str], state: DashboardState | None = None, mode: str = "orchestrator") -> list[dict]:
     """Run scenarios with concurrency limit."""
     cfg = get_config()
     sem = asyncio.Semaphore(parallel)
@@ -120,13 +137,13 @@ async def run_all(scenarios: list[dict], parallel: int, jwt_tokens: list[str], s
     async def run_with_sem(scenario, jwt_token):
         async with sem:
             cb = make_progress_callback(state, scenario["name"]) if state else None
-            return await run_one(scenario, cfg, jwt_token, progress_cb=cb)
+            return await run_one(scenario, cfg, jwt_token, progress_cb=cb, mode=mode)
 
     tasks = [run_with_sem(s, jwt_tokens[i % len(jwt_tokens)]) for i, s in enumerate(scenarios)]
     return await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def run_with_dashboard(scenarios: list[dict], parallel: int, jwt_tokens: list[str]) -> list[dict]:
+async def run_with_dashboard(scenarios: list[dict], parallel: int, jwt_tokens: list[str], mode: str = "orchestrator") -> list[dict]:
     """Run scenarios with Rich live dashboard."""
     state = DashboardState(parallel=parallel)
     for s in scenarios:
@@ -141,7 +158,7 @@ async def run_with_dashboard(scenarios: list[dict], parallel: int, jwt_tokens: l
 
     try:
         with Live(state, console=console, refresh_per_second=4, transient=True):
-            results = await run_all(scenarios, parallel, jwt_tokens, state)
+            results = await run_all(scenarios, parallel, jwt_tokens, state, mode=mode)
     finally:
         logging.root.setLevel(prev_level)
 
@@ -155,6 +172,8 @@ def main():
     parser.add_argument("-k", type=str, default=None, help="Filter scenarios by name substring")
     parser.add_argument("--clean", action="store_true", help="Delete test_results/ before running")
     parser.add_argument("--no-dashboard", action="store_true", help="Disable live dashboard")
+    parser.add_argument("--mode", choices=["orchestrator", "a2a"], default="orchestrator",
+                        help="orchestrator (via /run_sse) or a2a (direct to campaign-agent)")
     args = parser.parse_args()
 
     # Clean old results
@@ -170,16 +189,17 @@ def main():
     # Get JWT(s) BEFORE entering asyncio loop (Playwright sync API conflicts with asyncio)
     cfg = get_config()
     num_tokens = min(args.parallel, len(scenarios))
-    logger.info("Fetching %d JWT token(s) (use_real=%s)...", num_tokens, cfg.use_real_jwt)
+    logger.info("Mode: %s | Fetching %d JWT token(s) (use_real=%s)...",
+                args.mode, num_tokens, cfg.use_real_jwt)
     jwt_tokens = [get_jwt(cfg.use_real_jwt, cfg.user_id) for _ in range(num_tokens)]
     logger.info("JWT tokens ready")
 
     # Run with or without dashboard
     use_dashboard = not args.no_dashboard and console.is_terminal
     if use_dashboard:
-        results = asyncio.run(run_with_dashboard(scenarios, args.parallel, jwt_tokens))
+        results = asyncio.run(run_with_dashboard(scenarios, args.parallel, jwt_tokens, mode=args.mode))
     else:
-        results = asyncio.run(run_all(scenarios, args.parallel, jwt_tokens))
+        results = asyncio.run(run_all(scenarios, args.parallel, jwt_tokens, mode=args.mode))
 
     # Final summary
     clean_results = [r for r in results if not isinstance(r, Exception)]

@@ -5,7 +5,10 @@ import json
 import logging
 from collections.abc import Callable
 
+from config import get_config
 from controller.llm import generate_json
+
+_REVIEW_SEMAPHORE = asyncio.Semaphore(3)
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +35,7 @@ def _review_single(
     history_json: str,
     review_instructions: str,
     response: dict,
+    model: str | None = None,
 ) -> dict:
     """Review a single response metric (sync, for use in thread executor)."""
     system_prompt = (
@@ -48,7 +52,7 @@ Full conversation history:
 """
 
     try:
-        result, usage = generate_json(system_prompt, user_prompt)
+        result, usage = generate_json(system_prompt, user_prompt, model=model)
         return {
             "name": response["name"],
             "score": result.get("score", 0),
@@ -108,14 +112,18 @@ async def review_session(
     history_json = json.dumps(history_for_review, indent=2, ensure_ascii=False)
 
     # Run all reviews in parallel using thread executor (litellm is sync)
+    # Semaphore limits concurrent review calls to avoid rate limiting
     loop = asyncio.get_event_loop()
+    cfg = get_config()
+    review_model = cfg.litellm_review_model
     _done_count = 0
 
     async def _review_with_progress(response: dict) -> dict:
         nonlocal _done_count
-        result = await loop.run_in_executor(
-            None, _review_single, history_json, review_instructions, response,
-        )
+        async with _REVIEW_SEMAPHORE:
+            result = await loop.run_in_executor(
+                None, _review_single, history_json, review_instructions, response, review_model,
+            )
         _done_count += 1
         if progress_cb:
             label = "\u2713" if result["score"] == 1 else "\u2717"
