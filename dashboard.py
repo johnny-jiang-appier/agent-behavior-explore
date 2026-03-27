@@ -33,6 +33,7 @@ class ScenarioState:
     turn: int = 0
     max_turns: int = 30
     start_time: float | None = None
+    end_time: float | None = None
     detail: str = ""
     review_done: int = 0
     review_total: int = 0
@@ -42,7 +43,8 @@ class ScenarioState:
     def elapsed(self) -> float | None:
         if self.start_time is None:
             return None
-        return monotonic() - self.start_time
+        end = self.end_time if self.end_time is not None else monotonic()
+        return end - self.start_time
 
 
 @dataclass
@@ -73,6 +75,8 @@ def make_progress_callback(state: DashboardState, scenario_name: str) -> Callabl
             s.status = status
             if status == ScenarioStatus.RUNNING and s.start_time is None:
                 s.start_time = monotonic()
+            if status in (ScenarioStatus.DONE, ScenarioStatus.ERROR):
+                s.end_time = monotonic()
         if turn is not None:
             s.turn = turn
         if max_turns is not None:
