@@ -1,0 +1,12 @@
+scenarios:
+  - name: "test_sms_simple"
+    prompt: >
+      請幫我建立一個 SMS 行銷活動，全館八折加滿千免運，不需要指定受眾。
+    controller_instructions: >
+      對話風格保持簡潔合作。不要讓 agent 建立 segment。
+    steps:
+      - when: "agent 問受眾"
+        reply: "用 All Users"
+      - when: "agent 問發送時間"
+        reply: "明天早上 10 點"
+    max_turns: 15
