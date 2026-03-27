@@ -6,6 +6,10 @@ import json
 import logging
 from pathlib import Path
 
+from rich.console import Console
+from rich.table import Table
+from rich.text import Text
+
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -87,6 +91,80 @@ def export_csv(results: list[dict], output_path: str) -> None:
     logger.info("CSV exported to: %s", output_path)
 
 
+_STATUS_STYLES = {
+    "completed": "green",
+    "failed": "red",
+    "error": "red bold",
+    "max_turns_reached": "yellow",
+}
+
+
+def print_rich_summary(results: list[dict], console: Console | None = None) -> None:
+    """Print a Rich-formatted summary table with review scores."""
+    console = console or Console()
+    if not results:
+        console.print("[dim]No results found.[/]")
+        return
+
+    # Collect all score keys
+    all_score_keys: list[str] = []
+    seen = set()
+    for r in results:
+        for k in r.get("review", {}).get("scores", {}):
+            if k not in seen:
+                all_score_keys.append(k)
+                seen.add(k)
+
+    # Stats
+    total = len(results)
+    completed = sum(1 for r in results if r.get("status") == "completed")
+    failed = sum(1 for r in results if r.get("status") == "failed")
+    errors = sum(1 for r in results if r.get("status") in ("error", "max_turns_reached"))
+
+    title = (
+        f"Test Results  "
+        f"[bold]{completed}[/]/{total} passed "
+        f"\u00b7 [red]{failed}[/] failed "
+        f"\u00b7 [yellow]{errors}[/] errors"
+    )
+
+    table = Table(title=title, show_edge=True, pad_edge=True)
+    table.add_column("Scenario", style="bold", no_wrap=True)
+    table.add_column("Session", no_wrap=True)
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Turns", justify="right")
+    for key in all_score_keys:
+        table.add_column(key, justify="center", no_wrap=True)
+
+    for r in results:
+        status = r.get("status", "?")
+        style = _STATUS_STYLES.get(status, "")
+        sid = r.get("session_id", "-")
+        sid_short = sid[:8] if len(sid) > 8 else sid
+        scores = r.get("review", {}).get("scores", {})
+        score_cells = []
+        for k in all_score_keys:
+            v = scores.get(k)
+            if v == 1:
+                score_cells.append(Text("\u2713", style="green"))
+            elif v == 0:
+                score_cells.append(Text("\u2717", style="red"))
+            else:
+                score_cells.append(Text("-", style="dim"))
+
+        table.add_row(
+            r.get("scenario_name", "?"),
+            Text(sid_short, style="dim"),
+            Text(status, style=style),
+            str(r.get("turns", 0)),
+            *score_cells,
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Summarize test results")
     parser.add_argument("--csv", type=str, default=None, help="Export to CSV file")
@@ -95,7 +173,7 @@ def main():
 
     results_dir = Path(args.dir) if args.dir else RESULTS_DIR
     results = load_results(results_dir)
-    print_summary(results)
+    print_rich_summary(results)
 
     if args.csv:
         export_csv(results, args.csv)

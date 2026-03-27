@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 
 from controller.llm import generate_json
 
@@ -68,6 +69,7 @@ async def review_session(
     history: list[dict],
     review_instructions: str,
     responses: list[dict],
+    progress_cb: Callable[..., None] | None = None,
 ) -> dict:
     """
     Review a completed conversation session. Each response metric is evaluated
@@ -107,17 +109,23 @@ async def review_session(
 
     # Run all reviews in parallel using thread executor (litellm is sync)
     loop = asyncio.get_event_loop()
-    tasks = [
-        loop.run_in_executor(
-            None,
-            _review_single,
-            history_json,
-            review_instructions,
-            response,
+    _done_count = 0
+
+    async def _review_with_progress(response: dict) -> dict:
+        nonlocal _done_count
+        result = await loop.run_in_executor(
+            None, _review_single, history_json, review_instructions, response,
         )
-        for response in responses
-    ]
-    results = await asyncio.gather(*tasks)
+        _done_count += 1
+        if progress_cb:
+            label = "\u2713" if result["score"] == 1 else "\u2717"
+            progress_cb(
+                review_done=_done_count,
+                review_part=f"{result['name']}={label}",
+            )
+        return result
+
+    results = await asyncio.gather(*[_review_with_progress(r) for r in responses])
 
     # Aggregate
     scores = {}

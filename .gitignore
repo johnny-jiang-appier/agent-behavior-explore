@@ -5,3 +5,5 @@ test_results/
 __pycache__/
 .venv/
 *.pyc
+.DS_Store
+scenarios.yaml

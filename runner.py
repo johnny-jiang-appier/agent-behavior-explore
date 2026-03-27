@@ -1,11 +1,13 @@
 """Conversation loop: session -> multi-turn send/receive -> result."""
 
 import logging
+from collections.abc import Callable
 from datetime import datetime
 
 from client.orchestrator import OrchestratorClient
 from controller.decide import decide_next_step
 from controller.reviewer import review_session
+from dashboard import ScenarioStatus
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +23,7 @@ async def run_scenario(
     review_instructions: str | None = None,
     responses: list[dict] | None = None,
     max_turns: int = 30,
+    progress_cb: Callable[..., None] | None = None,
 ) -> dict:
     """
     Run a full conversation scenario.
@@ -32,21 +35,29 @@ async def run_scenario(
     token_totals = {"prompt_token_count": 0, "candidates_token_count": 0, "total_token_count": 0}
     user_input = prompt
 
+    if progress_cb:
+        progress_cb(status=ScenarioStatus.RUNNING, turn=0, max_turns=max_turns)
+    else:
+        logger.info("=== Starting scenario: %s ===", scenario_name)
+
     for turn in range(1, max_turns + 1):
-        logger.info("[Turn %d/%d] User -> %s", turn, max_turns, user_input[:80])
+        if not progress_cb:
+            logger.info("[Turn %d/%d] User -> %s", turn, max_turns, user_input[:80])
 
         # Send message and get response
         turn_data = await client.send_message(session_id, user_input)
 
         agent_text = turn_data["agent"]
-        logger.info("[Turn %d/%d] Agent -> %s", turn, max_turns, agent_text[:100])
 
-        if turn_data["langfuse_trace_url"]:
-            logger.info("[Turn %d/%d] Langfuse: %s", turn, max_turns, turn_data["langfuse_trace_url"])
-
-        if turn_data["tool_calls"]:
-            logger.info("[Turn %d/%d] Tool calls: %s", turn, max_turns,
-                        [tc["name"] for tc in turn_data["tool_calls"]])
+        if progress_cb:
+            progress_cb(turn=turn, detail=f"Agent \u2192 {agent_text[:150]}")
+        else:
+            logger.info("[Turn %d/%d] Agent -> %s", turn, max_turns, agent_text[:100])
+            if turn_data["langfuse_trace_url"]:
+                logger.info("[Turn %d/%d] Langfuse: %s", turn, max_turns, turn_data["langfuse_trace_url"])
+            if turn_data["tool_calls"]:
+                logger.info("[Turn %d/%d] Tool calls: %s", turn, max_turns,
+                            [tc["name"] for tc in turn_data["tool_calls"]])
 
         # Record turn
         turn_record = {
@@ -82,8 +93,12 @@ async def run_scenario(
             for k in ("prompt_token_count", "candidates_token_count", "total_token_count"):
                 token_totals[k] += usage.get(k, 0)
 
-        logger.info("[Turn %d/%d] Controller -> verdict=%s result=%s reason=%s",
-                     turn, max_turns, decision["verdict"], decision.get("result"), decision.get("reason", "")[:80])
+        if progress_cb:
+            reason_text = decision.get("reason", "")[:120]
+            progress_cb(detail=f"Controller \u2192 {decision['verdict']}: {reason_text}")
+        else:
+            logger.info("[Turn %d/%d] Controller -> verdict=%s result=%s reason=%s",
+                        turn, max_turns, decision["verdict"], decision.get("result"), decision.get("reason", "")[:80])
 
         if decision["verdict"] == "stop":
             test_result = decision.get("result", "pass")
@@ -100,7 +115,9 @@ async def run_scenario(
                 token_usage_turns=token_usage_turns,
                 token_totals=token_totals,
             )
-            await _run_review(result, review_instructions, responses)
+            await _run_review(result, review_instructions, responses, progress_cb)
+            if progress_cb:
+                _report_done(result, progress_cb)
             return result
 
         next_input = decision.get("next_user_input")
@@ -109,7 +126,8 @@ async def run_scenario(
             logger.warning("[Turn %d/%d] Empty next_user_input, using fallback", turn, max_turns)
         user_input = next_input
 
-    logger.info("Max turns reached (%d)", max_turns)
+    if not progress_cb:
+        logger.info("Max turns reached (%d)", max_turns)
     result = _build_result(
         session_id=session_id,
         scenario_name=scenario_name,
@@ -122,22 +140,53 @@ async def run_scenario(
         token_usage_turns=token_usage_turns,
         token_totals=token_totals,
     )
-    await _run_review(result, review_instructions, responses)
+    await _run_review(result, review_instructions, responses, progress_cb)
+    if progress_cb:
+        _report_done(result, progress_cb)
     return result
 
 
-async def _run_review(result: dict, review_instructions: str | None, responses: list[dict] | None) -> None:
+def _report_done(result: dict, progress_cb: Callable[..., None]) -> None:
+    """Report final status to dashboard."""
+    status_str = result["status"]
+    sid = result.get("session_id", "")
+    scores = result.get("review", {}).get("scores", {})
+    parts = [status_str]
+    if sid:
+        parts.append(sid[:8])
+    if scores:
+        parts.append(" ".join(f"{k}={v}" for k, v in scores.items()))
+    detail = " \u00b7 ".join(parts)
+
+    ds = ScenarioStatus.DONE if status_str in ("completed", "max_turns_reached") else ScenarioStatus.ERROR
+    progress_cb(status=ds, detail=detail)
+
+
+async def _run_review(
+    result: dict,
+    review_instructions: str | None,
+    responses: list[dict] | None,
+    progress_cb: Callable[..., None] | None = None,
+) -> None:
     """Run session-level review if instructions and responses are provided."""
     if not review_instructions or not responses:
         return
-    logger.info("Running session review (%d response metrics)...", len(responses))
+
+    if progress_cb:
+        progress_cb(status=ScenarioStatus.REVIEWING, review_total=len(responses), review_done=0)
+    else:
+        logger.info("Running session review (%d response metrics)...", len(responses))
+
     review = await review_session(
         history=result["history"],
         review_instructions=review_instructions,
         responses=responses,
+        progress_cb=progress_cb,
     )
     result["review"] = review
-    logger.info("Review complete: %s", {k: v for k, v in review["scores"].items()})
+
+    if not progress_cb:
+        logger.info("Review complete: %s", {k: v for k, v in review["scores"].items()})
 
 
 def _build_result(**kwargs) -> dict:

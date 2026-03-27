@@ -6,6 +6,8 @@ import re
 
 import litellm
 
+litellm.suppress_debug_info = True
+
 from config import get_config
 
 logger = logging.getLogger(__name__)
