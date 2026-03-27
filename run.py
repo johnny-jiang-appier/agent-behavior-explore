@@ -20,6 +20,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Suppress noisy third-party loggers
+logging.getLogger("litellm").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 RESULTS_DIR = Path(__file__).parent / "test_results"
 
 
@@ -45,19 +50,17 @@ def save_result(result: dict) -> None:
     logger.info("Result saved: %s", out_file)
 
 
-async def run_one(scenario: dict, cfg) -> dict:
+async def run_one(scenario: dict, cfg, jwt_token: str) -> dict:
     """Run a single scenario end-to-end."""
     name = scenario["name"]
     logger.info("=== Starting scenario: %s ===", name)
-
-    jwt = get_jwt(cfg.use_real_jwt, cfg.user_id)
 
     client = OrchestratorClient(
         base_url=cfg.orchestrator_url,
         app_name=cfg.app_name,
         user_id=cfg.user_id,
         eam_project_id=cfg.eam_project_id,
-        jwt=jwt,
+        jwt=jwt_token,
         langfuse_project_id=cfg.langfuse_project_id,
     )
 
@@ -70,6 +73,8 @@ async def run_one(scenario: dict, cfg) -> dict:
         scenario_name=name,
         controller_instructions=scenario.get("controller_instructions"),
         steps=scenario.get("steps"),
+        review_instructions=scenario.get("review_instructions"),
+        responses=scenario.get("responses"),
         max_turns=scenario.get("max_turns", 30),
     )
 
@@ -78,16 +83,16 @@ async def run_one(scenario: dict, cfg) -> dict:
     return result
 
 
-async def run_all(scenarios: list[dict], parallel: int) -> list[dict]:
+async def run_all(scenarios: list[dict], parallel: int, jwt_tokens: list[str]) -> list[dict]:
     """Run scenarios with concurrency limit."""
     cfg = get_config()
     sem = asyncio.Semaphore(parallel)
 
-    async def run_with_sem(scenario):
+    async def run_with_sem(scenario, jwt_token):
         async with sem:
-            return await run_one(scenario, cfg)
+            return await run_one(scenario, cfg, jwt_token)
 
-    tasks = [run_with_sem(s) for s in scenarios]
+    tasks = [run_with_sem(s, jwt_tokens[i % len(jwt_tokens)]) for i, s in enumerate(scenarios)]
     return await asyncio.gather(*tasks, return_exceptions=True)
 
 
@@ -103,7 +108,14 @@ def main():
         logger.error("No scenarios found")
         return
 
-    results = asyncio.run(run_all(scenarios, args.parallel))
+    # Get JWT(s) BEFORE entering asyncio loop (Playwright sync API conflicts with asyncio)
+    cfg = get_config()
+    num_tokens = min(args.parallel, len(scenarios))
+    logger.info("Fetching %d JWT token(s) (use_real=%s)...", num_tokens, cfg.use_real_jwt)
+    jwt_tokens = [get_jwt(cfg.use_real_jwt, cfg.user_id) for _ in range(num_tokens)]
+    logger.info("JWT tokens ready")
+
+    results = asyncio.run(run_all(scenarios, args.parallel, jwt_tokens))
 
     # Summary
     print("\n" + "=" * 60)

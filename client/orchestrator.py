@@ -31,12 +31,14 @@ class OrchestratorClient:
 
     async def create_session(self) -> str:
         """Create a new session and return the session ID."""
-        url = f"{self.base_url}/api/adk/apps/{self.app_name}/users/{quote(self.user_id)}/sessions"
+        # Use encoded user_id format: eam_project_id::email
+        encoded_user_id = f"{self.eam_project_id}::{self.user_id}" if self.eam_project_id else self.user_id
+        url = f"{self.base_url}/api/adk/apps/{self.app_name}/users/{quote(encoded_user_id)}/sessions"
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 url,
                 headers=self._headers,
-                json={"user_id": self.user_id, "eam_project_id": self.eam_project_id},
+                json={"user_id": encoded_user_id, "eam_project_id": self.eam_project_id},
                 timeout=30.0,
             )
             resp.raise_for_status()

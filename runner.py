@@ -5,6 +5,7 @@ from datetime import datetime
 
 from client.orchestrator import OrchestratorClient
 from controller.decide import decide_next_step
+from controller.reviewer import review_session
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,8 @@ async def run_scenario(
     scenario_name: str | None = None,
     controller_instructions: str | None = None,
     steps: list[dict] | None = None,
+    review_instructions: str | None = None,
+    responses: list[dict] | None = None,
     max_turns: int = 30,
 ) -> dict:
     """
@@ -51,18 +54,28 @@ async def run_scenario(
             "agent": agent_text,
             "langfuse_trace_url": turn_data["langfuse_trace_url"],
             "tool_calls": turn_data["tool_calls"],
-            "raw_events": turn_data["raw_events"],
         }
         history.append(turn_record)
 
-        # Ask controller what to do next
-        decision, usage = decide_next_step(
-            history=[{"user": h["user"], "agent": h["agent"]} for h in history],
-            last_user_input=user_input,
-            agent_response=agent_text,
-            controller_instructions=controller_instructions,
-            steps=steps,
-        )
+        # Ask controller what to do next (retry on failure)
+        decision = None
+        usage = None
+        for ctrl_attempt in range(1, 4):
+            try:
+                decision, usage = decide_next_step(
+                    history=[{"user": h["user"], "agent": h["agent"]} for h in history],
+                    last_user_input=user_input,
+                    agent_response=agent_text,
+                    controller_instructions=controller_instructions,
+                    steps=steps,
+                )
+                break
+            except Exception as e:
+                logger.error("[Turn %d/%d] Controller error (attempt %d/3): %s", turn, max_turns, ctrl_attempt, e)
+                if ctrl_attempt >= 3:
+                    logger.error("Controller failed after 3 attempts, forcing continue")
+                    decision = {"verdict": "continue", "result": "pass", "reason": f"Controller error: {e}", "next_user_input": "請繼續"}
+                    break
 
         if usage:
             token_usage_turns.append(usage)
@@ -75,7 +88,7 @@ async def run_scenario(
         if decision["verdict"] == "stop":
             test_result = decision.get("result", "pass")
             status = "completed" if test_result == "pass" else "failed"
-            return _build_result(
+            result = _build_result(
                 session_id=session_id,
                 scenario_name=scenario_name,
                 status=status,
@@ -87,6 +100,8 @@ async def run_scenario(
                 token_usage_turns=token_usage_turns,
                 token_totals=token_totals,
             )
+            await _run_review(result, review_instructions, responses)
+            return result
 
         next_input = decision.get("next_user_input")
         if not next_input:
@@ -95,7 +110,7 @@ async def run_scenario(
         user_input = next_input
 
     logger.info("Max turns reached (%d)", max_turns)
-    return _build_result(
+    result = _build_result(
         session_id=session_id,
         scenario_name=scenario_name,
         status="max_turns_reached",
@@ -107,6 +122,22 @@ async def run_scenario(
         token_usage_turns=token_usage_turns,
         token_totals=token_totals,
     )
+    await _run_review(result, review_instructions, responses)
+    return result
+
+
+async def _run_review(result: dict, review_instructions: str | None, responses: list[dict] | None) -> None:
+    """Run session-level review if instructions and responses are provided."""
+    if not review_instructions or not responses:
+        return
+    logger.info("Running session review (%d response metrics)...", len(responses))
+    review = await review_session(
+        history=result["history"],
+        review_instructions=review_instructions,
+        responses=responses,
+    )
+    result["review"] = review
+    logger.info("Review complete: %s", {k: v for k, v in review["scores"].items()})
 
 
 def _build_result(**kwargs) -> dict:
