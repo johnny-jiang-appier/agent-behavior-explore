@@ -168,7 +168,7 @@ async def run_all(scenarios: list[dict], parallel: int, jwt_tokens: list[str], s
     async def run_with_sem(scenario, jwt_token):
         async with sem:
             cb = make_progress_callback(state, scenario["name"]) if state else None
-            return await run_one(scenario, cfg, jwt_token, progress_cb=cb, mode=mode)
+            return await run_one(scenario, cfg, jwt_token, progress_cb=cb, mode=scenario.get("mode", mode))
 
     tasks = [run_with_sem(s, jwt_tokens[i % len(jwt_tokens)]) for i, s in enumerate(scenarios)]
     return await asyncio.gather(*tasks, return_exceptions=True)
@@ -212,7 +212,7 @@ async def retry_failed(
             async with sem:
                 cb = make_progress_callback(state, scenario["name"]) if state else None
                 try:
-                    result = await run_one(scenario, cfg, jwt_token, progress_cb=cb, mode=mode)
+                    result = await run_one(scenario, cfg, jwt_token, progress_cb=cb, mode=scenario.get("mode", mode))
                     return (idx, result)
                 except Exception as e:
                     return (idx, e)
