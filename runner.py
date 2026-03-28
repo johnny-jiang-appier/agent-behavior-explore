@@ -149,14 +149,14 @@ async def run_scenario(
 def _report_done(result: dict, progress_cb: Callable[..., None]) -> None:
     """Report final status to dashboard."""
     status_str = result["status"]
-    sid = result.get("session_id", "")
+    sid = result.get("session_id", "")[:8]
     scores = result.get("review", {}).get("scores", {})
-    parts = [status_str]
-    if sid:
-        parts.append(sid[:8])
     if scores:
-        parts.append(" ".join(f"{k}={v}" for k, v in scores.items()))
-    detail = " \u00b7 ".join(parts)
+        passed = sum(1 for v in scores.values() if v == 1)
+        total = len(scores)
+        detail = f"{status_str} \u00b7 {sid} \u00b7 {passed}/{total} passed"
+    else:
+        detail = f"{status_str} \u00b7 {sid}"
 
     ds = ScenarioStatus.DONE if status_str in ("completed", "max_turns_reached") else ScenarioStatus.ERROR
     progress_cb(status=ds, detail=detail)

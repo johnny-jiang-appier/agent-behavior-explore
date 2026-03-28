@@ -115,9 +115,12 @@ def render_dashboard(state: DashboardState) -> Table:
     table.add_column("Status", width=14, no_wrap=True)
     table.add_column("Turn", width=8, justify="right", no_wrap=True)
     table.add_column("Elapsed", width=8, justify="right", no_wrap=True)
-    table.add_column("Detail", ratio=1, overflow="ellipsis")
+    table.add_column("Detail", ratio=1, no_wrap=True, overflow="ellipsis")
 
-    for s in scenarios:
+    # Only show running/reviewing + recently done/error; skip pending to save space
+    active = [s for s in scenarios if s.status not in (ScenarioStatus.PENDING,)]
+
+    for s in active:
         icon, style = _STATUS_DISPLAY[s.status]
         status_text = Text(f"{icon} {s.status.value}", style=style)
 
