@@ -74,7 +74,11 @@ async def run_scenario(
         for ctrl_attempt in range(1, 4):
             try:
                 decision, usage = decide_next_step(
-                    history=[{"user": h["user"], "agent": h["agent"]} for h in history],
+                    history=[{
+                        "user": h["user"],
+                        "agent": h["agent"],
+                        "tool_calls": [tc["name"] for tc in h.get("tool_calls", [])],
+                    } for h in history],
                     last_user_input=user_input,
                     agent_response=agent_text,
                     controller_instructions=controller_instructions,
