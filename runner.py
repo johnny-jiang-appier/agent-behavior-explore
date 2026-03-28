@@ -73,43 +73,29 @@ async def run_scenario(
         decision = None
         usage = None
         ctrl_delays = [10, 30, 60]
-        last_ctrl_error = None
+        ctrl_history = [{
+            "user": h["user"],
+            "agent": h["agent"],
+            "tool_calls": [tc["name"] for tc in h.get("tool_calls", [])],
+        } for h in history]
+        ctrl_kwargs = dict(
+            history=ctrl_history, last_user_input=user_input, agent_response=agent_text,
+            controller_instructions=controller_instructions, steps=steps,
+        )
         for ctrl_attempt in range(1, 4):
             try:
-                decision, usage = decide_next_step(
-                    history=[{
-                        "user": h["user"],
-                        "agent": h["agent"],
-                        "tool_calls": [tc["name"] for tc in h.get("tool_calls", [])],
-                    } for h in history],
-                    last_user_input=user_input,
-                    agent_response=agent_text,
-                    controller_instructions=controller_instructions,
-                    steps=steps,
-                )
+                decision, usage = decide_next_step(**ctrl_kwargs)
                 break
             except Exception as e:
-                last_ctrl_error = e
                 delay = ctrl_delays[ctrl_attempt - 1]
                 logger.error("[Turn %d/%d] Controller error (attempt %d/3, wait %ds): %s", turn, max_turns, ctrl_attempt, delay, e)
                 await asyncio.sleep(delay)
 
-        # All 3 failed — wait 3 minutes and try once more
         if decision is None:
             logger.warning("[Turn %d/%d] Controller failed 3 times, waiting 180s for final attempt", turn, max_turns)
             await asyncio.sleep(180)
             try:
-                decision, usage = decide_next_step(
-                    history=[{
-                        "user": h["user"],
-                        "agent": h["agent"],
-                        "tool_calls": [tc["name"] for tc in h.get("tool_calls", [])],
-                    } for h in history],
-                    last_user_input=user_input,
-                    agent_response=agent_text,
-                    controller_instructions=controller_instructions,
-                    steps=steps,
-                )
+                decision, usage = decide_next_step(**ctrl_kwargs)
             except Exception as e:
                 logger.error("[Turn %d/%d] Controller failed after final attempt, forcing continue: %s", turn, max_turns, e)
                 decision = {"verdict": "continue", "result": "pass", "reason": f"Controller error: {e}", "next_user_input": "請繼續"}

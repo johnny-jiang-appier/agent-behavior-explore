@@ -1,11 +1,12 @@
 """Async HTTP client for campaign-agent A2A endpoint (JSON-RPC)."""
 
-import asyncio
 import json
 import logging
 import uuid
 
 import httpx
+
+from client.retry import retry_with_backoff
 
 logger = logging.getLogger(__name__)
 
@@ -53,15 +54,9 @@ class A2AClient:
         logger.info("A2A session: %s", self.session_id)
         return self.session_id
 
-    async def send_message(self, session_id: str, text: str, max_retries: int = 3) -> dict:
+    async def send_message(self, session_id: str, text: str) -> dict:
         """
         Send a message via A2A JSON-RPC and return parsed turn data.
-
-        1. Append user text to _history_parts
-        2. Build message.parts from full _history_parts
-        3. POST to /a2a
-        4. Extract turn data (agent text + tool calls) for runner
-        5. Append all agent-side parts (text + tool calls + tool responses) to _history_parts
 
         Returns same format as OrchestratorClient:
             {agent, tool_calls, langfuse_trace_url}
@@ -89,62 +84,22 @@ class A2AClient:
         }
 
         url = f"{self.base_url}/a2a"
-        delays = [10, 30, 60]
 
-        for attempt in range(1, max_retries + 1):
-            try:
-                async with httpx.AsyncClient(timeout=httpx.Timeout(A2A_TIMEOUT, connect=10.0)) as client:
-                    resp = await client.post(url, headers=self._headers, json=body)
-                    resp.raise_for_status()
-                    data = resp.json()
+        async def _do():
+            async with httpx.AsyncClient(timeout=httpx.Timeout(A2A_TIMEOUT, connect=10.0)) as client:
+                resp = await client.post(url, headers=self._headers, json=body)
+                resp.raise_for_status()
+                data = resp.json()
 
-                if "error" in data:
-                    err = data["error"]
-                    if attempt >= max_retries:
-                        logger.warning("A2A error %d times, waiting 180s for final attempt: %s", max_retries, err.get("message", err))
-                        await asyncio.sleep(180)
-                        async with httpx.AsyncClient(timeout=httpx.Timeout(A2A_TIMEOUT, connect=10.0)) as final_client:
-                            resp2 = await final_client.post(url, headers=self._headers, json=body)
-                            resp2.raise_for_status()
-                            data2 = resp2.json()
-                        if "error" in data2:
-                            raise RuntimeError(f"A2A error: {err.get('message', err)}")
-                        result = data2.get("result", {})
-                        turn_data = self._extract_turn_data(result)
-                        self._append_agent_history(result)
-                        return turn_data
-                    delay = delays[attempt - 1] if attempt - 1 < len(delays) else delays[-1]
-                    logger.error("A2A error (attempt %d/%d, wait %ds): %s", attempt, max_retries, delay, err.get("message", err))
-                    await asyncio.sleep(delay)
-                    continue
+            if "error" in data:
+                raise RuntimeError(f"A2A error: {data['error'].get('message', data['error'])}")
 
-                result = data.get("result", {})
-                turn_data = self._extract_turn_data(result)
-                self._append_agent_history(result)
-                return turn_data
+            result = data.get("result", {})
+            turn_data = self._extract_turn_data(result)
+            self._append_agent_history(result)
+            return turn_data
 
-            except (httpx.HTTPStatusError, httpx.ReadTimeout, httpx.ConnectError) as e:
-                if attempt >= max_retries:
-                    logger.warning("A2A send_message failed %d times, waiting 180s for final attempt: %s", max_retries, e)
-                    await asyncio.sleep(180)
-                    try:
-                        async with httpx.AsyncClient(timeout=httpx.Timeout(A2A_TIMEOUT, connect=10.0)) as final_client:
-                            resp = await final_client.post(url, headers=self._headers, json=body)
-                            resp.raise_for_status()
-                            data = resp.json()
-                        if "error" in data:
-                            raise RuntimeError(f"A2A error after final attempt: {data['error']}")
-                        result = data.get("result", {})
-                        turn_data = self._extract_turn_data(result)
-                        self._append_agent_history(result)
-                        return turn_data
-                    except (httpx.HTTPStatusError, httpx.ReadTimeout, httpx.ConnectError):
-                        raise e
-                delay = delays[attempt - 1] if attempt - 1 < len(delays) else delays[-1]
-                logger.error("A2A send_message failed (attempt %d/%d, wait %ds): %s", attempt, max_retries, delay, e)
-                await asyncio.sleep(delay)
-
-        return {"agent": "", "tool_calls": [], "langfuse_trace_url": None}
+        return await retry_with_backoff(_do, label="a2a_send_message")
 
     def _append_agent_history(self, result: dict) -> None:
         """
