@@ -38,6 +38,7 @@ class ScenarioState:
     review_done: int = 0
     review_total: int = 0
     review_parts: list[str] = field(default_factory=list)
+    retry_attempt: int = 0
 
     @property
     def elapsed(self) -> float | None:
@@ -131,8 +132,9 @@ def render_dashboard(state: DashboardState) -> Table:
             turn_text = f"{s.turn}/{s.max_turns}"
             elapsed_text = f"{s.elapsed:.0f}s" if s.elapsed is not None else "-"
 
+        display_name = f"{s.name} (retry {s.retry_attempt})" if s.retry_attempt > 0 else s.name
         detail = _build_detail(s)
-        table.add_row(s.name, status_text, turn_text, elapsed_text, detail)
+        table.add_row(display_name, status_text, turn_text, elapsed_text, detail)
 
     return table
 

@@ -1,5 +1,6 @@
 """Async HTTP client for orchestrator API."""
 
+import asyncio
 import json
 import logging
 from urllib.parse import quote
@@ -29,24 +30,43 @@ class OrchestratorClient:
             "Authorization": f"Bearer {jwt}",
         }
 
-    async def create_session(self) -> str:
+    async def create_session(self, max_retries: int = 4) -> str:
         """Create a new session and return the session ID."""
-        # Use encoded user_id format: eam_project_id::email
         encoded_user_id = f"{self.eam_project_id}::{self.user_id}" if self.eam_project_id else self.user_id
         url = f"{self.base_url}/api/adk/apps/{self.app_name}/users/{quote(encoded_user_id)}/sessions"
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                url,
-                headers=self._headers,
-                json={"user_id": encoded_user_id, "eam_project_id": self.eam_project_id},
-                timeout=30.0,
-            )
-            resp.raise_for_status()
-            session_id = resp.json()["id"]
-            logger.info("Session created: %s", session_id)
-            return session_id
+        delays = [10, 30, 60]
+        for attempt in range(1, max_retries + 1):
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.post(
+                        url,
+                        headers=self._headers,
+                        json={"user_id": encoded_user_id, "eam_project_id": self.eam_project_id},
+                        timeout=30.0,
+                    )
+                    resp.raise_for_status()
+                    session_id = resp.json()["id"]
+                    logger.info("Session created: %s", session_id)
+                    return session_id
+            except (httpx.HTTPStatusError, httpx.ReadTimeout, httpx.ConnectError) as e:
+                if attempt >= max_retries:
+                    logger.warning("create_session failed %d times, waiting 180s for final attempt: %s", max_retries, e)
+                    await asyncio.sleep(180)
+                    try:
+                        async with httpx.AsyncClient() as final_client:
+                            resp = await final_client.post(url, headers=self._headers, json={"user_id": encoded_user_id, "eam_project_id": self.eam_project_id}, timeout=30.0)
+                            resp.raise_for_status()
+                            session_id = resp.json()["id"]
+                            logger.info("Session created (after long wait): %s", session_id)
+                            return session_id
+                    except (httpx.HTTPStatusError, httpx.ReadTimeout, httpx.ConnectError):
+                        raise e
+                delay = delays[attempt - 1] if attempt - 1 < len(delays) else delays[-1]
+                logger.error("create_session failed (attempt %d/%d, wait %ds): %s", attempt, max_retries, delay, e)
+                await asyncio.sleep(delay)
+        raise RuntimeError("create_session: unreachable")
 
-    async def send_message(self, session_id: str, text: str, max_retries: int = 3) -> dict:
+    async def send_message(self, session_id: str, text: str, max_retries: int = 4) -> dict:
         """
         Send a message via /run_sse and return parsed turn data.
 
@@ -62,6 +82,7 @@ class OrchestratorClient:
             "eam_project_id": self.eam_project_id,
         }
         url = f"{self.base_url}/api/adk/run_sse"
+        delays = [10, 30, 60]
 
         for attempt in range(1, max_retries + 1):
             try:
@@ -80,15 +101,33 @@ class OrchestratorClient:
                     for e in events
                 )
                 if not has_final and events:
-                    logger.warning("SSE stream incomplete (attempt %d/%d), no is_final_response", attempt, max_retries)
                     if attempt < max_retries:
+                        delay = delays[attempt - 1] if attempt - 1 < len(delays) else delays[-1]
+                        logger.warning("SSE stream incomplete (attempt %d/%d, wait %ds)", attempt, max_retries, delay)
+                        await asyncio.sleep(delay)
                         continue
 
                 return extract_turn_data(events, self.langfuse_project_id)
 
             except (httpx.HTTPStatusError, httpx.ReadTimeout, httpx.ConnectError) as e:
-                logger.error("send_message failed (attempt %d/%d): %s", attempt, max_retries, e)
                 if attempt >= max_retries:
-                    raise
+                    # Final long wait before giving up
+                    logger.warning("send_message failed %d times, waiting 180s for final attempt: %s", max_retries, e)
+                    await asyncio.sleep(180)
+                    try:
+                        events = []
+                        async with httpx.AsyncClient(timeout=httpx.Timeout(SSE_TIMEOUT, connect=10.0)) as final_client:
+                            async with final_client.stream("POST", url, headers=self._headers, json=body) as resp:
+                                resp.raise_for_status()
+                                async for line in resp.aiter_lines():
+                                    event = parse_sse_line(line)
+                                    if event:
+                                        events.append(event)
+                        return extract_turn_data(events, self.langfuse_project_id)
+                    except (httpx.HTTPStatusError, httpx.ReadTimeout, httpx.ConnectError):
+                        raise e
+                delay = delays[attempt - 1] if attempt - 1 < len(delays) else delays[-1]
+                logger.error("send_message failed (attempt %d/%d, wait %ds): %s", attempt, max_retries, delay, e)
+                await asyncio.sleep(delay)
 
         return extract_turn_data([], self.langfuse_project_id)
