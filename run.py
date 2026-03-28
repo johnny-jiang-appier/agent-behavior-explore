@@ -161,14 +161,20 @@ def _identify_retryable(scenarios: list[dict], results: list) -> list[tuple[int,
 
 
 async def run_all(scenarios: list[dict], parallel: int, jwt_tokens: list[str], state: DashboardState | None = None, mode: str = "orchestrator") -> list[dict]:
-    """Run scenarios with concurrency limit."""
+    """Run scenarios with per-mode concurrency limit."""
     cfg = get_config()
-    sem = asyncio.Semaphore(parallel)
+    sems: dict[str, asyncio.Semaphore] = {}
+
+    def _get_sem(m: str) -> asyncio.Semaphore:
+        if m not in sems:
+            sems[m] = asyncio.Semaphore(parallel)
+        return sems[m]
 
     async def run_with_sem(scenario, jwt_token):
-        async with sem:
+        scenario_mode = scenario.get("mode", mode)
+        async with _get_sem(scenario_mode):
             cb = make_progress_callback(state, scenario["name"]) if state else None
-            return await run_one(scenario, cfg, jwt_token, progress_cb=cb, mode=scenario.get("mode", mode))
+            return await run_one(scenario, cfg, jwt_token, progress_cb=cb, mode=scenario_mode)
 
     tasks = [run_with_sem(s, jwt_tokens[i % len(jwt_tokens)]) for i, s in enumerate(scenarios)]
     return await asyncio.gather(*tasks, return_exceptions=True)
@@ -185,7 +191,12 @@ async def retry_failed(
 ) -> list:
     """Retry failed/error scenarios up to max_retries times."""
     cfg = get_config()
-    sem = asyncio.Semaphore(parallel)
+    sems: dict[str, asyncio.Semaphore] = {}
+
+    def _get_sem(m: str) -> asyncio.Semaphore:
+        if m not in sems:
+            sems[m] = asyncio.Semaphore(parallel)
+        return sems[m]
 
     for attempt in range(1, max_retries + 1):
         retryable = _identify_retryable(scenarios, results)
@@ -196,7 +207,6 @@ async def retry_failed(
         logger.info("Retry round %d/%d: %d scenario(s) — %s", attempt, max_retries, len(retryable), ", ".join(names))
 
         async def run_retry(idx, scenario, jwt_token):
-            # Reset dashboard state for this scenario
             if state and scenario["name"] in state.scenarios:
                 s = state.scenarios[scenario["name"]]
                 s.status = ScenarioStatus.PENDING
@@ -209,10 +219,11 @@ async def retry_failed(
                 s.review_parts = []
                 s.retry_attempt = attempt
 
-            async with sem:
+            scenario_mode = scenario.get("mode", mode)
+            async with _get_sem(scenario_mode):
                 cb = make_progress_callback(state, scenario["name"]) if state else None
                 try:
-                    result = await run_one(scenario, cfg, jwt_token, progress_cb=cb, mode=scenario.get("mode", mode))
+                    result = await run_one(scenario, cfg, jwt_token, progress_cb=cb, mode=scenario_mode)
                     return (idx, result)
                 except Exception as e:
                     return (idx, e)
