@@ -52,13 +52,13 @@ def _build_system_prompt(
 ) -> str:
     prompt = _BASE_SYSTEM_PROMPT
 
+    if controller_instructions:
+        prompt += f"\n\nScenario context and instructions (PRIMARY — follow these):\n{controller_instructions.strip()}\n"
+
     if steps:
-        prompt += "\n\nKey decision points (follow these first):\n"
+        prompt += "\n\nCritical decision points (use these EXACT replies when the situation matches):\n"
         for step in steps:
             prompt += f"- When {step['when']} → reply \"{step['reply']}\"\n"
-
-    if controller_instructions:
-        prompt += f"\n\nAdditional instructions:\n{controller_instructions.strip()}\n"
 
     return prompt
 

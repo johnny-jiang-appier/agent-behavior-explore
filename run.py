@@ -62,6 +62,18 @@ def load_scenarios(path: str, filter_key: str | None = None) -> list[dict]:
     if filter_key:
         scenarios = [s for s in scenarios if filter_key in s["name"]]
 
+    # Prepend shared base texts to each scenario
+    defs = data.get("_definitions") or {}
+    base_context = defs.get("base_context", "")
+    base_review = defs.get("base_review_instructions", "")
+    for s in scenarios:
+        if base_context:
+            ci = s.get("controller_instructions", "")
+            s["controller_instructions"] = (base_context.strip() + "\n\n" + ci.strip()).strip()
+        if base_review and s.get("review_instructions"):
+            ri = s["review_instructions"]
+            s["review_instructions"] = (base_review.strip() + "\n\n" + ri.strip()).strip()
+
     # Validate
     valid = []
     for i, s in enumerate(scenarios):
