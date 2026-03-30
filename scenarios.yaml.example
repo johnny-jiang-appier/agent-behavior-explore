@@ -1,0 +1,124 @@
+# ============================================================================
+# scenarios.yaml — Test scenario definitions for agent-behavior-explore
+# ============================================================================
+#
+# This file defines test scenarios that the LLM controller will execute
+# against the target agent. Each scenario simulates a multi-turn conversation.
+#
+# Place this file at the project root as `scenarios.yaml`, or specify a
+# custom path with `--scenarios path/to/file.yaml`.
+
+# ── Shared Definitions ───────────────────────────────────────────────────────
+# Optional top-level block for reusable content across scenarios.
+
+_definitions:
+
+  # Shared controller persona — auto-prepended to every scenario's
+  # controller_instructions field. Use this for common behavior rules
+  # so individual scenarios only need scenario-specific instructions.
+  base_context: |
+    You are a cooperative user testing an AI agent.
+    When the agent presents options, pick the first one unless the scenario
+    says otherwise. Don't volunteer information ahead of time — respond to
+    what the agent asks, one step at a time.
+
+  # Shared review methodology — auto-prepended to every scenario's
+  # review_instructions field. Use this for review standards that apply
+  # to all scenarios (evaluation framework, scoring rubric, etc.)
+  base_review_instructions: |
+    Review the conversation at two levels:
+    1. Flow completion: Did the agent reach the final step?
+    2. Tool correctness: Were tool calls made in the right order with correct params?
+
+  # Shared response metrics — use YAML anchor (&) so scenarios can reference
+  # them with alias (*) instead of duplicating the full list.
+  responses: &all_responses
+    - name: "flow_completion"
+      description: >
+        Agent completed the full workflow end-to-end, reaching the channel's
+        final tool without requiring manual intervention or abandoning mid-flow.
+    - name: "tool_ordering"
+      description: >
+        All tool calls were made in the correct sequence. No mandatory steps
+        were skipped or called out of order.
+    - name: "data_fidelity"
+      description: >
+        Data from tool outputs (product names, IDs, prices) was passed
+        correctly to downstream tools without mutation or loss.
+
+# ── Scenarios ────────────────────────────────────────────────────────────────
+
+scenarios:
+
+  # --------------------------------------------------------------------------
+  # Minimal scenario — only required fields (name + prompt)
+  # --------------------------------------------------------------------------
+  - name: simple_greeting
+    prompt: >
+      Hi, I'd like to create a marketing campaign.
+
+  # --------------------------------------------------------------------------
+  # Full scenario — all fields demonstrated
+  # --------------------------------------------------------------------------
+  - name: run_01_edm_rec_ready_search
+    mode: orchestrator                 # optional: orchestrator (default) or a2a
+    prompt: >
+      I want to create an email campaign using a recommendation model
+      to show personalized products. Use a carousel layout with multiple products.
+    controller_instructions: >
+      This is an EDM REC flow with an existing scenario and agent-searched
+      default values. Verify: getScenarioDetail → presentModelStatus must
+      happen before content generation.
+    steps:
+      - when: "agent shows template options"
+        reply: "Pick the first one"
+      - when: "agent asks about default values"
+        reply: "Search the product catalog for defaults"
+      - when: "agent shows search results"
+        reply: "Use the first one"
+      - when: "agent lists default values for confirmation"
+        reply: "Confirmed"
+      - when: "agent asks about segment"
+        reply: "Skip segment, not needed"
+    review_instructions: >
+      EDM REC flow test. channel=edm, flow=rec, scenario=use_ready.
+      Verify: (1) getScenarioDetail → presentModelStatus before content gen
+      (2) searchProduct used for defaults
+      (3) createEDMCreative has complete dynamic_syntax_config
+    responses: *all_responses          # reference shared metrics
+    max_turns: 30
+    enabled: true
+
+  # --------------------------------------------------------------------------
+  # A2A mode scenario
+  # --------------------------------------------------------------------------
+  - name: run_02_line_event_manual
+    mode: a2a                          # runs via A2A instead of orchestrator
+    prompt: >
+      Create a LINE message using event-based dynamic content
+      to show products based on user browsing behavior.
+    controller_instructions: >
+      This is a pure event LINE flow. No REC model tools should be called.
+      If the agent asks about recommendation models, redirect:
+      "No recommendation model needed, this is event-based only."
+    steps:
+      - when: "agent recommends an event name"
+        reply: "OK, use that event"
+      - when: "agent asks about default values"
+        reply: "Product name 'Summer Sale', price NT$490, image https://cdn.example.com/summer.jpg, link https://shop.example.com/summer"
+      - when: "agent lists default values for confirmation"
+        reply: "Confirmed"
+    review_instructions: >
+      LINE event flow test. channel=line, flow=event, default_value=user_manual.
+      Verify: (1) No REC tools called (2) event flow correct
+      (3) presentLINECreative → presentCampaign
+    responses: *all_responses
+    max_turns: 25
+
+  # --------------------------------------------------------------------------
+  # Disabled scenario (skipped during execution)
+  # --------------------------------------------------------------------------
+  - name: run_03_experimental
+    enabled: false                     # won't run, but kept for reference
+    prompt: >
+      Experimental scenario for future testing.
