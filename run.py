@@ -13,6 +13,7 @@ from rich.live import Live
 
 from auth.jwt_manager import get_jwt
 from client.a2a import A2AClient
+from client.adk import ADKClient
 from client.orchestrator import OrchestratorClient
 from config import get_config
 from dashboard import DashboardState, ScenarioState, ScenarioStatus, make_progress_callback, render_dashboard
@@ -106,7 +107,15 @@ def save_result(result: dict) -> None:
 def _create_client(cfg, mode: str, jwt_token: str | None = None):
     """Create client based on mode. Returns (client, session_id_coroutine_or_str)."""
     if mode == "a2a":
+        logger.warning("a2a mode is deprecated — use 'adk' mode instead (endpoint: /api/adk/a2a/multi_agent)")
         return A2AClient(
+            base_url=cfg.campaign_agent_url,
+            eam_project_id=cfg.eam_project_id,
+            user_email=cfg.user_id,
+            jwt=jwt_token,
+        )
+    if mode == "adk":
+        return ADKClient(
             base_url=cfg.campaign_agent_url,
             eam_project_id=cfg.eam_project_id,
             user_email=cfg.user_id,
@@ -131,8 +140,8 @@ async def run_one(scenario: dict, cfg, jwt_token: str | None, progress_cb=None, 
     client = _create_client(cfg, mode, jwt_token)
 
     try:
-        # A2A create_session is sync; orchestrator is async
-        if mode == "a2a":
+        # A2A/ADK create_session is sync; orchestrator is async
+        if mode in ("a2a", "adk"):
             session_id = client.create_session()
         else:
             session_id = await client.create_session()
@@ -280,8 +289,8 @@ def main():
     parser.add_argument("-k", type=str, default=None, help="Filter scenarios by name substring")
     parser.add_argument("--clean", action="store_true", help="Delete test_results/ before running")
     parser.add_argument("--no-dashboard", action="store_true", help="Disable live dashboard")
-    parser.add_argument("--mode", choices=["orchestrator", "a2a"], default="orchestrator",
-                        help="orchestrator (via /run_sse) or a2a (direct to campaign-agent)")
+    parser.add_argument("--mode", choices=["orchestrator", "a2a", "adk"], default="orchestrator",
+                        help="orchestrator (via /run_sse), adk (direct via /api/adk/a2a/multi_agent), or a2a (deprecated)")
     parser.add_argument("--retry", type=int, default=0, help="Max retry attempts per failed scenario (0=no retry)")
     parser.add_argument("--resume", action="store_true", help="Skip scenarios already completed in test_results/")
     args = parser.parse_args()
