@@ -53,10 +53,21 @@ Full conversation history:
 
     try:
         result, usage = generate_json(system_prompt, user_prompt, model=model)
+        raw_score = result.get("score")
+        # Normalize: accept int 0/1, bool, or string variations
+        if isinstance(raw_score, bool):
+            score = 1 if raw_score else 0
+        elif isinstance(raw_score, (int, float)):
+            score = 1 if raw_score >= 1 else 0
+        elif isinstance(raw_score, str):
+            score = 1 if raw_score.lower() in ("1", "pass", "true", "yes") else 0
+        else:
+            logger.warning("Unexpected score type for %s: %r, defaulting to 0", response["name"], raw_score)
+            score = 0
         return {
             "name": response["name"],
-            "score": result.get("score", 0),
-            "detail": result.get("detail", ""),
+            "score": score,
+            "detail": result.get("detail") or result.get("explanation") or result.get("reason") or "",
             "token_usage": usage,
         }
     except Exception as e:

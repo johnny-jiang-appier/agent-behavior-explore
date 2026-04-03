@@ -7,6 +7,11 @@ from controller.llm import generate_json
 
 logger = logging.getLogger(__name__)
 
+# Max characters to keep per tool_call response value in history
+_MAX_TOOL_RESPONSE_CHARS = 500
+# Number of recent turns to include in full detail; older turns are summarized
+_RECENT_TURNS = 8
+
 _BASE_SYSTEM_PROMPT = """You are testing an AI agent. You simulate the USER and control the test flow.
 
 Your responsibilities:
@@ -63,6 +68,52 @@ def _build_system_prompt(
     return prompt
 
 
+def _truncate_tool_response(value, max_chars: int = _MAX_TOOL_RESPONSE_CHARS):
+    """Truncate a tool call response value to avoid blowing up context."""
+    if value is None:
+        return None
+    s = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value
+    if len(s) <= max_chars:
+        return value
+    return s[:max_chars] + f"... [truncated, {len(s)} chars total]"
+
+
+def _compact_history(history: list[dict]) -> list[dict]:
+    """
+    Compact conversation history to fit within reasonable context limits.
+
+    - Recent turns: full detail (with truncated tool responses)
+    - Older turns: summarized (user input + tool names only, no agent text)
+    """
+    compacted = []
+    cutoff = max(0, len(history) - _RECENT_TURNS)
+
+    for i, turn in enumerate(history):
+        if i < cutoff:
+            # Summarize older turns: keep user input and tool names only
+            summary = {"user": turn["user"]}
+            tool_names = turn.get("tool_calls", [])
+            if tool_names:
+                summary["tool_calls"] = tool_names
+            summary["agent"] = "[earlier turn — see recent turns for detail]"
+            compacted.append(summary)
+        else:
+            # Recent turns: full detail with truncated tool responses
+            entry = {"user": turn["user"], "agent": turn["agent"]}
+            if turn.get("tool_calls"):
+                entry["tool_calls"] = [
+                    {
+                        **tc,
+                        "response": _truncate_tool_response(tc.get("response")),
+                    }
+                    if "response" in tc else tc
+                    for tc in turn["tool_calls"]
+                ]
+            compacted.append(entry)
+
+    return compacted
+
+
 def decide_next_step(
     history: list[dict],
     last_user_input: str,
@@ -72,23 +123,43 @@ def decide_next_step(
 ) -> tuple[dict, dict | None]:
     """Ask the controller LLM what to do next."""
     system_prompt = _build_system_prompt(controller_instructions, steps)
-    user_prompt = f"""
-Conversation so far:
-{json.dumps(history, indent=2, ensure_ascii=False)}
 
-Last user input:
-{last_user_input}
+    compacted = _compact_history(history)
 
-Agent response:
-{agent_response}
+    user_prompt = f"""Conversation so far ({len(history)} turns):
+{json.dumps(compacted, indent=2, ensure_ascii=False)}
 """
     decision, usage = generate_json(system_prompt, user_prompt)
     _sanitize(decision)
     return decision, usage
 
 
+_VALID_VERDICTS = {"continue", "stop"}
+_VALID_RESULTS = {"pass", "fail"}
+
+
 def _sanitize(decision: dict) -> None:
     for key in ("verdict", "result", "reason", "next_user_input"):
         val = decision.get(key)
         if isinstance(val, str):
-            decision[key] = " ".join(val.split())
+            decision[key] = " ".join(val.split()).lower() if key in ("verdict", "result") else " ".join(val.split())
+
+    # Normalize verdict
+    verdict = decision.get("verdict", "")
+    if verdict not in _VALID_VERDICTS:
+        # Try to map common LLM variations
+        if verdict in ("end", "done", "finish", "complete"):
+            decision["verdict"] = "stop"
+        else:
+            logger.warning("Invalid verdict '%s', defaulting to 'continue'", verdict)
+            decision["verdict"] = "continue"
+
+    # Normalize result
+    result = decision.get("result", "")
+    if result not in _VALID_RESULTS:
+        if result in ("success", "passed", "ok", "yes"):
+            decision["result"] = "pass"
+        elif result in ("failure", "failed", "error", "no"):
+            decision["result"] = "fail"
+        else:
+            decision["result"] = "pass" if decision["verdict"] == "continue" else "fail"
