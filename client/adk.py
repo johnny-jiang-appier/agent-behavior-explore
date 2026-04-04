@@ -1,8 +1,12 @@
-"""Async HTTP client for campaign-agent ADK A2A endpoint (JSON-RPC)."""
+"""Async HTTP client for campaign-agent ADK A2A endpoint (JSON-RPC).
+
+Uses orchestrator as artifact storage backend for journey map operations.
+"""
 
 import json
 import logging
 import uuid
+from urllib.parse import quote
 
 import httpx
 
@@ -22,6 +26,10 @@ class ADKClient:
     - Text:             metadata={"role": "user"|"model", "text": "..."}
     - FunctionCall:     metadata={"role": "model", "text": "FunctionCall(name=..., args=...)"}
     - FunctionResponse: metadata={"role": "model", "text": "FunctionResponse(name=..., response=...)"}
+
+    Orchestrator is used as artifact storage backend — the client creates a
+    session on the orchestrator and passes artifact headers so campaign-agent
+    tools (journey map, EDM creative) can read/write artifacts.
     """
 
     def __init__(
@@ -29,29 +37,65 @@ class ADKClient:
         base_url: str,
         eam_project_id: str,
         user_email: str,
+        orchestrator_url: str,
+        app_name: str = "multi_agent",
         jwt: str | None = None,
         session_id: str | None = None,
+        artifact_origin: str | None = None,
     ):
         self.base_url = base_url.rstrip("/")
+        self.orchestrator_url = orchestrator_url.rstrip("/")
+        # artifact_origin is the URL campaign-agent containers use to reach
+        # orchestrator (e.g. http://host.docker.internal:8888)
+        self.artifact_origin = (artifact_origin or orchestrator_url).rstrip("/")
+        self.app_name = app_name
         self.eam_project_id = eam_project_id
         self.user_email = user_email
         self.session_id = session_id or str(uuid.uuid4())
+        self._jwt = jwt
         # Each entry: {"role": str, "text": str, "author": str|None}
         self._history_parts: list[dict] = []
         self._agent_name = "campaign_agent"
+        self._headers: dict[str, str] = {}
+
+    async def create_session(self) -> str:
+        """Create a session on orchestrator (for artifact storage) and return session_id."""
+        encoded_user_id = f"{self.eam_project_id}::{self.user_email}"
+        url = f"{self.orchestrator_url}/api/adk/apps/{self.app_name}/users/{quote(encoded_user_id)}/sessions"
+        headers = {"Content-Type": "application/json"}
+        if self._jwt:
+            headers["Authorization"] = f"Bearer {self._jwt}"
+
+        async def _do():
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    url, headers=headers,
+                    json={"user_id": encoded_user_id, "eam_project_id": self.eam_project_id},
+                    timeout=30.0,
+                )
+                resp.raise_for_status()
+                self.session_id = resp.json()["id"]
+                logger.info("ADK session created (via orchestrator): %s", self.session_id)
+                return self.session_id
+
+        session_id = await retry_with_backoff(_do, label="adk_create_session")
+
+        # Build headers for all subsequent A2A requests
+        user_id = f"{self.eam_project_id}::{self.user_email}"
+        api_path = f"/api/adk/apps/{self.app_name}/users/{user_id}/sessions/{self.session_id}"
         self._headers = {
             "Content-Type": "application/json",
-            "x-adk-session-eam-project-id": eam_project_id,
-            "x-adk-session-user-email": user_email,
+            "x-adk-session-eam-project-id": self.eam_project_id,
+            "x-adk-session-user-email": self.user_email,
             "x-adk-session-id": self.session_id,
+            # Artifact storage headers — point to orchestrator (as seen from campaign-agent container)
+            "x-adk-session-api-origin": self.artifact_origin,
+            "x-adk-session-api-path": api_path,
         }
-        if jwt:
-            self._headers["Authorization"] = f"Bearer {jwt}"
+        if self._jwt:
+            self._headers["Authorization"] = f"Bearer {self._jwt}"
 
-    def create_session(self) -> str:
-        """Return session_id (no server call needed for ADK A2A)."""
-        logger.info("ADK session: %s", self.session_id)
-        return self.session_id
+        return session_id
 
     async def send_message(self, session_id: str, text: str) -> dict:
         """

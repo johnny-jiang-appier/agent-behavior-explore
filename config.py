@@ -12,6 +12,7 @@ load_dotenv()
 class Config:
     orchestrator_url: str = os.environ.get("ORCHESTRATOR_URL", "http://localhost:8888")
     campaign_agent_url: str = os.environ.get("CAMPAIGN_AGENT_URL", "http://localhost:8777")
+    artifact_origin: str = os.environ.get("ARTIFACT_ORIGIN", "http://host.docker.internal:8888")
     app_name: str = os.environ.get("APP_NAME", "multi_agent")
     user_id: str = os.environ.get("USER_ID", "johnny.jiang@appier.com")
     eam_project_id: str = os.environ.get("EAM_PROJECT_ID", "project-aIgu7x4r9")

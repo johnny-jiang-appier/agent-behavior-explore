@@ -12,7 +12,6 @@ from rich.console import Console
 from rich.live import Live
 
 from auth.jwt_manager import get_jwt
-from client.a2a import A2AClient
 from client.adk import ADKClient
 from client.orchestrator import OrchestratorClient
 from config import get_config
@@ -61,7 +60,8 @@ def load_scenarios(path: str, filter_key: str | None = None) -> list[dict]:
         data = yaml.safe_load(f)
     scenarios = [s for s in data.get("scenarios", []) if s.get("enabled", True)]
     if filter_key:
-        scenarios = [s for s in scenarios if filter_key in s["name"]]
+        keys = [k.strip() for k in filter_key.split("|") if k.strip()]
+        scenarios = [s for s in scenarios if any(k in s["name"] for k in keys)]
 
     # Prepend shared base texts to each scenario
     defs = data.get("_definitions") or {}
@@ -105,21 +105,16 @@ def save_result(result: dict) -> None:
 
 
 def _create_client(cfg, mode: str, jwt_token: str | None = None):
-    """Create client based on mode. Returns (client, session_id_coroutine_or_str)."""
-    if mode == "a2a":
-        logger.warning("a2a mode is deprecated — use 'adk' mode instead (endpoint: /api/adk/a2a/multi_agent)")
-        return A2AClient(
-            base_url=cfg.campaign_agent_url,
-            eam_project_id=cfg.eam_project_id,
-            user_email=cfg.user_id,
-            jwt=jwt_token,
-        )
+    """Create client based on mode."""
     if mode == "adk":
         return ADKClient(
             base_url=cfg.campaign_agent_url,
             eam_project_id=cfg.eam_project_id,
             user_email=cfg.user_id,
+            orchestrator_url=cfg.orchestrator_url,
+            app_name=cfg.app_name,
             jwt=jwt_token,
+            artifact_origin=cfg.artifact_origin,
         )
     return OrchestratorClient(
         base_url=cfg.orchestrator_url,
@@ -140,11 +135,7 @@ async def run_one(scenario: dict, cfg, jwt_token: str | None, progress_cb=None, 
     client = _create_client(cfg, mode, jwt_token)
 
     try:
-        # A2A/ADK create_session is sync; orchestrator is async
-        if mode in ("a2a", "adk"):
-            session_id = client.create_session()
-        else:
-            session_id = await client.create_session()
+        session_id = await client.create_session()
 
         result = await run_scenario(
             client=client,
@@ -289,8 +280,8 @@ def main():
     parser.add_argument("-k", type=str, default=None, help="Filter scenarios by name substring")
     parser.add_argument("--clean", action="store_true", help="Delete test_results/ before running")
     parser.add_argument("--no-dashboard", action="store_true", help="Disable live dashboard")
-    parser.add_argument("--mode", choices=["orchestrator", "a2a", "adk"], default="orchestrator",
-                        help="orchestrator (via /run_sse), adk (direct via /api/adk/a2a/multi_agent), or a2a (deprecated)")
+    parser.add_argument("--mode", choices=["orchestrator", "adk"], default="orchestrator",
+                        help="orchestrator (via /run_sse) or adk (direct via /api/adk/a2a/multi_agent)")
     parser.add_argument("--retry", type=int, default=0, help="Max retry attempts per failed scenario (0=no retry)")
     parser.add_argument("--resume", action="store_true", help="Skip scenarios already completed in test_results/")
     args = parser.parse_args()
