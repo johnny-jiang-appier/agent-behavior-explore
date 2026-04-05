@@ -23,11 +23,22 @@ Score the metric:
 - 1 = the metric is satisfied
 - 0 = the metric is NOT satisfied
 
+Additionally, identify which conversation turns (0-indexed) contain issues related to this metric.
+For each problematic turn, provide:
+- turn: the 0-indexed turn number
+- probability: 0.0-1.0 confidence that this turn has a problem for this metric
+- note: brief explanation of the issue in that turn
+
 Output ONLY valid JSON:
 {
   "score": 1,
-  "detail": "Brief explanation of why this score was given."
+  "detail": "Brief explanation of why this score was given.",
+  "turn_problems": [
+    {"turn": 3, "probability": 0.8, "note": "Explanation of issue in turn 3"}
+  ]
 }
+
+If no turns have problems, set turn_problems to an empty array [].
 """
 
 
@@ -68,6 +79,7 @@ Full conversation history:
             "name": response["name"],
             "score": score,
             "detail": result.get("detail") or result.get("explanation") or result.get("reason") or "",
+            "turn_problems": result.get("turn_problems") or [],
             "token_usage": usage,
         }
     except Exception as e:
@@ -76,6 +88,7 @@ Full conversation history:
             "name": response["name"],
             "score": 0,
             "detail": f"Review failed: {e}",
+            "turn_problems": [],
             "token_usage": None,
         }
 
@@ -146,18 +159,34 @@ async def review_session(
 
     results = await asyncio.gather(*[_review_with_progress(r) for r in responses])
 
-    # Aggregate
+    # Aggregate scores and details
     scores = {}
     details = {}
     total_usage = {"prompt_token_count": 0, "candidates_token_count": 0, "total_token_count": 0}
+    all_turn_problems: dict[str, list] = {}
     for r in results:
         scores[r["name"]] = r["score"]
         details[r["name"]] = r["detail"]
+        all_turn_problems[r["name"]] = r.get("turn_problems", [])
         if r["token_usage"]:
             for k in total_usage:
                 total_usage[k] += r["token_usage"].get(k, 0)
 
     review_detail = "\n".join(f"- {name}: {'PASS' if s == 1 else 'FAIL'} — {details[name]}" for name, s in scores.items())
+
+    # Aggregate turn-level problems into history
+    for turn in history:
+        turn["problem"] = False
+        turn["note"] = []
+
+    for metric_name, problems in all_turn_problems.items():
+        for tp in problems:
+            turn_idx = tp.get("turn")
+            probability = tp.get("probability", 0)
+            note = tp.get("note", "")
+            if isinstance(turn_idx, int) and 0 <= turn_idx < len(history) and probability > 0.5:
+                history[turn_idx]["problem"] = True
+                history[turn_idx]["note"].append(f"[{metric_name}] {note}")
 
     return {
         "scores": scores,
