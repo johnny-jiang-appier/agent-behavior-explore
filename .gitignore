@@ -9,4 +9,4 @@ __pycache__/
 scenarios.yaml
 .mcp.json
 .playwright-mcp/
-.DS_Store
+.superpowers/
