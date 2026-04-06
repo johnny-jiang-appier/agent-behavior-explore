@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import shutil
+from datetime import datetime
 from pathlib import Path
 
 import yaml
@@ -103,6 +104,21 @@ def save_result(result: dict, output_dir: Path | None = None) -> None:
     out_file = out_dir / "result.json"
     out_file.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
     logger.info("Result saved: %s", out_file)
+
+
+def _update_run_context(output_dir: Path, num_sessions: int) -> None:
+    """Update run-context.yaml in the parent of output_dir (the run directory)."""
+    run_dir = output_dir.parent
+    ctx_path = run_dir / "run-context.yaml"
+    if not ctx_path.exists():
+        return
+
+    ctx = yaml.safe_load(ctx_path.read_text(encoding="utf-8")) or {}
+    ctx["phase"] = "executed"
+    ctx["sessions_count"] = num_sessions
+    ctx["updated_at"] = datetime.now().strftime("%Y-%m-%d")
+    ctx_path.write_text(yaml.dump(ctx, default_flow_style=False, allow_unicode=True), encoding="utf-8")
+    logger.info("Updated run-context: %s (phase=executed, sessions=%d)", ctx_path, num_sessions)
 
 
 def _create_client(cfg, mode: str, jwt_token: str | None = None):
@@ -340,6 +356,11 @@ def main():
     # Final summary
     clean_results = [r for r in results if not isinstance(r, Exception)]
     errors = [r for r in results if isinstance(r, Exception)]
+
+    # Update run-context.yaml if using custom output
+    if args.output:
+        num_ok = sum(1 for r in clean_results if isinstance(r, dict))
+        _update_run_context(output_dir, num_sessions=num_ok)
 
     print_rich_summary(clean_results, console=console)
 

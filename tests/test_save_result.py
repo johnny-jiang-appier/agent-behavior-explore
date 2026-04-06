@@ -79,3 +79,38 @@ def test_run_with_dashboard_accepts_output_dir():
     from run import run_with_dashboard
     sig = inspect.signature(run_with_dashboard)
     assert "output_dir" in sig.parameters
+
+
+def test_update_run_context_sets_executed_phase(tmp_path):
+    """_update_run_context should update phase to 'executed' and set sessions_count."""
+    import yaml
+    from run import _update_run_context
+
+    run_dir = tmp_path / "run-01"
+    sessions_dir = run_dir / "sessions"
+    sessions_dir.mkdir(parents=True)
+
+    ctx = {
+        "feature": "test-feature",
+        "run": "run-01",
+        "workspace": str(tmp_path),
+        "phase": "designed",
+        "created_at": "2026-04-06",
+        "sessions_count": 0,
+    }
+    (run_dir / "run-context.yaml").write_text(yaml.dump(ctx))
+
+    _update_run_context(sessions_dir, num_sessions=2)
+
+    updated = yaml.safe_load((run_dir / "run-context.yaml").read_text())
+    assert updated["phase"] == "executed"
+    assert updated["sessions_count"] == 2
+    assert "updated_at" in updated
+
+
+def test_update_run_context_noop_when_no_context_file(tmp_path):
+    """_update_run_context should do nothing if run-context.yaml doesn't exist."""
+    from run import _update_run_context
+    _update_run_context(tmp_path, num_sessions=5)
+    # Should not raise, should not create file
+    assert not (tmp_path.parent / "run-context.yaml").exists()
