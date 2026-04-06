@@ -171,7 +171,7 @@ def main():
     parser.add_argument("--dir", type=str, default=None, help="Results directory")
     args = parser.parse_args()
 
-    results_dir = Path(args.dir) if args.dir else RESULTS_DIR
+    results_dir = Path(args.dir) if args.dir else DEFAULT_RESULTS_DIR
     results = load_results(results_dir)
     print_rich_summary(results)
 
