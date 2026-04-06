@@ -13,10 +13,10 @@ from rich.text import Text
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-RESULTS_DIR = Path(__file__).parent / "test_results"
+DEFAULT_RESULTS_DIR = Path(__file__).parent / "test_results"
 
 
-def load_results(results_dir: Path = RESULTS_DIR) -> list[dict]:
+def load_results(results_dir: Path = DEFAULT_RESULTS_DIR) -> list[dict]:
     results = []
     for d in sorted(results_dir.iterdir()):
         if not d.is_dir():
