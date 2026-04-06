@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 for _name in ("litellm", "LiteLLM", "LiteLLM Proxy", "LiteLLM Router", "httpx", "httpcore"):
     logging.getLogger(_name).setLevel(logging.ERROR)
 
-RESULTS_DIR = Path(__file__).parent / "test_results"
+DEFAULT_RESULTS_DIR = Path(__file__).parent / "test_results"
 
 console = Console()
 
@@ -38,9 +38,9 @@ console = Console()
 def _load_completed_scenarios() -> set[str]:
     """Scan test_results/ for scenarios with status=completed."""
     completed = set()
-    if not RESULTS_DIR.exists():
+    if not DEFAULT_RESULTS_DIR.exists():
         return completed
-    for d in RESULTS_DIR.iterdir():
+    for d in DEFAULT_RESULTS_DIR.iterdir():
         if not d.is_dir():
             continue
         result_file = d / "result.json"
@@ -92,12 +92,13 @@ def load_scenarios(path: str, filter_key: str | None = None) -> list[dict]:
     return valid
 
 
-def save_result(result: dict) -> None:
+def save_result(result: dict, output_dir: Path | None = None) -> None:
     session_id = result.get("session_id")
     if not session_id:
         logger.warning("No session_id, skipping save")
         return
-    out_dir = RESULTS_DIR / session_id
+    base = output_dir if output_dir is not None else DEFAULT_RESULTS_DIR
+    out_dir = base / session_id
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / "result.json"
     out_file.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -290,9 +291,9 @@ def main():
         parser.error("--resume and --clean are mutually exclusive")
 
     # Clean old results
-    if args.clean and RESULTS_DIR.exists():
-        shutil.rmtree(RESULTS_DIR)
-        logger.info("Cleaned %s", RESULTS_DIR)
+    if args.clean and DEFAULT_RESULTS_DIR.exists():
+        shutil.rmtree(DEFAULT_RESULTS_DIR)
+        logger.info("Cleaned %s", DEFAULT_RESULTS_DIR)
 
     scenarios = load_scenarios(args.scenarios, args.k)
     if not scenarios:
