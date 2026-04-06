@@ -35,12 +35,12 @@ DEFAULT_RESULTS_DIR = Path(__file__).parent / "test_results"
 console = Console()
 
 
-def _load_completed_scenarios() -> set[str]:
-    """Scan test_results/ for scenarios with status=completed."""
+def _load_completed_scenarios(results_dir: Path = DEFAULT_RESULTS_DIR) -> set[str]:
+    """Scan results directory for scenarios with status=completed."""
     completed = set()
-    if not DEFAULT_RESULTS_DIR.exists():
+    if not results_dir.exists():
         return completed
-    for d in DEFAULT_RESULTS_DIR.iterdir():
+    for d in results_dir.iterdir():
         if not d.is_dir():
             continue
         result_file = d / "result.json"
@@ -286,15 +286,19 @@ def main():
                         help="orchestrator (via /run_sse) or adk (direct via /api/adk/a2a/multi_agent)")
     parser.add_argument("--retry", type=int, default=0, help="Max retry attempts per failed scenario (0=no retry)")
     parser.add_argument("--resume", action="store_true", help="Skip scenarios already completed in test_results/")
+    parser.add_argument("--output", type=str, default=None,
+                        help="Output directory for session results (default: ./test_results/)")
     args = parser.parse_args()
 
     if args.resume and args.clean:
         parser.error("--resume and --clean are mutually exclusive")
 
+    output_dir = Path(args.output).expanduser().resolve() if args.output else DEFAULT_RESULTS_DIR
+
     # Clean old results
-    if args.clean and DEFAULT_RESULTS_DIR.exists():
-        shutil.rmtree(DEFAULT_RESULTS_DIR)
-        logger.info("Cleaned %s", DEFAULT_RESULTS_DIR)
+    if args.clean and output_dir.exists():
+        shutil.rmtree(output_dir)
+        logger.info("Cleaned %s", output_dir)
 
     scenarios = load_scenarios(args.scenarios, args.k)
     if not scenarios:
@@ -303,7 +307,7 @@ def main():
 
     # Resume: skip already-completed scenarios
     if args.resume:
-        completed = _load_completed_scenarios()
+        completed = _load_completed_scenarios(output_dir)
         before = len(scenarios)
         scenarios = [s for s in scenarios if s["name"] not in completed]
         skipped = before - len(scenarios)
@@ -324,12 +328,12 @@ def main():
     # Run with or without dashboard
     use_dashboard = not args.no_dashboard and console.is_terminal
     if use_dashboard:
-        results = asyncio.run(run_with_dashboard(scenarios, args.parallel, jwt_tokens, mode=args.mode, max_retries=args.retry))
+        results = asyncio.run(run_with_dashboard(scenarios, args.parallel, jwt_tokens, mode=args.mode, max_retries=args.retry, output_dir=output_dir))
     else:
         async def _run():
-            r = await run_all(scenarios, args.parallel, jwt_tokens, mode=args.mode)
+            r = await run_all(scenarios, args.parallel, jwt_tokens, mode=args.mode, output_dir=output_dir)
             if args.retry > 0:
-                r = await retry_failed(scenarios, r, args.retry, args.parallel, jwt_tokens, mode=args.mode)
+                r = await retry_failed(scenarios, r, args.retry, args.parallel, jwt_tokens, mode=args.mode, output_dir=output_dir)
             return r
         results = asyncio.run(_run())
 
