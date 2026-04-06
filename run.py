@@ -127,7 +127,7 @@ def _create_client(cfg, mode: str, jwt_token: str | None = None):
     )
 
 
-async def run_one(scenario: dict, cfg, jwt_token: str | None, progress_cb=None, mode: str = "orchestrator") -> dict:
+async def run_one(scenario: dict, cfg, jwt_token: str | None, progress_cb=None, mode: str = "orchestrator", output_dir: Path | None = None) -> dict:
     """Run a single scenario end-to-end."""
     name = scenario["name"]
     if not progress_cb:
@@ -151,7 +151,7 @@ async def run_one(scenario: dict, cfg, jwt_token: str | None, progress_cb=None, 
             progress_cb=progress_cb,
         )
 
-        save_result(result)
+        save_result(result, output_dir=output_dir)
         if not progress_cb:
             logger.info("=== Scenario %s: %s (%d turns) ===", name, result["status"], result["turns"])
         return result
@@ -173,7 +173,7 @@ def _identify_retryable(scenarios: list[dict], results: list) -> list[tuple[int,
     return retryable
 
 
-async def run_all(scenarios: list[dict], parallel: int, jwt_tokens: list[str], state: DashboardState | None = None, mode: str = "orchestrator") -> list[dict]:
+async def run_all(scenarios: list[dict], parallel: int, jwt_tokens: list[str], state: DashboardState | None = None, mode: str = "orchestrator", output_dir: Path | None = None) -> list[dict]:
     """Run scenarios with per-mode concurrency limit."""
     cfg = get_config()
     sems: dict[str, asyncio.Semaphore] = {}
@@ -187,7 +187,7 @@ async def run_all(scenarios: list[dict], parallel: int, jwt_tokens: list[str], s
         scenario_mode = scenario.get("mode", mode)
         async with _get_sem(scenario_mode):
             cb = make_progress_callback(state, scenario["name"]) if state else None
-            return await run_one(scenario, cfg, jwt_token, progress_cb=cb, mode=scenario_mode)
+            return await run_one(scenario, cfg, jwt_token, progress_cb=cb, mode=scenario_mode, output_dir=output_dir)
 
     tasks = [run_with_sem(s, jwt_tokens[i % len(jwt_tokens)]) for i, s in enumerate(scenarios)]
     return await asyncio.gather(*tasks, return_exceptions=True)
@@ -201,6 +201,7 @@ async def retry_failed(
     jwt_tokens: list[str],
     state: DashboardState | None = None,
     mode: str = "orchestrator",
+    output_dir: Path | None = None,
 ) -> list:
     """Retry failed/error scenarios up to max_retries times."""
     cfg = get_config()
@@ -236,7 +237,7 @@ async def retry_failed(
             async with _get_sem(scenario_mode):
                 cb = make_progress_callback(state, scenario["name"]) if state else None
                 try:
-                    result = await run_one(scenario, cfg, jwt_token, progress_cb=cb, mode=scenario_mode)
+                    result = await run_one(scenario, cfg, jwt_token, progress_cb=cb, mode=scenario_mode, output_dir=output_dir)
                     return (idx, result)
                 except Exception as e:
                     return (idx, e)
@@ -250,7 +251,7 @@ async def retry_failed(
     return results
 
 
-async def run_with_dashboard(scenarios: list[dict], parallel: int, jwt_tokens: list[str], mode: str = "orchestrator", max_retries: int = 0) -> list[dict]:
+async def run_with_dashboard(scenarios: list[dict], parallel: int, jwt_tokens: list[str], mode: str = "orchestrator", max_retries: int = 0, output_dir: Path | None = None) -> list[dict]:
     """Run scenarios with Rich live dashboard."""
     state = DashboardState(parallel=parallel)
     for s in scenarios:
@@ -265,9 +266,9 @@ async def run_with_dashboard(scenarios: list[dict], parallel: int, jwt_tokens: l
 
     try:
         with Live(state, console=console, refresh_per_second=4, screen=True):
-            results = await run_all(scenarios, parallel, jwt_tokens, state, mode=mode)
+            results = await run_all(scenarios, parallel, jwt_tokens, state, mode=mode, output_dir=output_dir)
             if max_retries > 0:
-                results = await retry_failed(scenarios, results, max_retries, parallel, jwt_tokens, state, mode)
+                results = await retry_failed(scenarios, results, max_retries, parallel, jwt_tokens, state, mode, output_dir=output_dir)
     finally:
         logging.root.setLevel(prev_level)
 
