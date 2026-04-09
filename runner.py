@@ -9,6 +9,7 @@ from client.orchestrator import OrchestratorClient
 from controller.decide import decide_next_step
 from controller.reviewer import review_session
 from dashboard import ScenarioStatus
+from verification.ojm_verifier import verify_journey_map
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,8 @@ async def run_scenario(
     responses: list[dict] | None = None,
     max_turns: int = 30,
     progress_cb: Callable[..., None] | None = None,
+    ojm_api_host: str | None = None,
+    ojm_token: str | None = None,
 ) -> dict:
     """
     Run a full conversation scenario.
@@ -68,6 +71,36 @@ async def run_scenario(
             "tool_calls": turn_data["tool_calls"],
         }
         history.append(turn_record)
+
+        # Inline OJM verification after finalize/update tool calls
+        if ojm_api_host and ojm_token and turn_data["tool_calls"]:
+            _VERIFY_TOOLS = {"finalizeJourneyMap", "updateExistingJourneyMap"}
+            for tc in turn_data["tool_calls"]:
+                if tc["name"] not in _VERIFY_TOOLS:
+                    continue
+                resp = tc.get("response", {})
+                if not isinstance(resp, dict) or resp.get("status") != "success":
+                    continue
+                jm_id = resp.get("journey_id", "")
+                if not jm_id:
+                    continue
+                logger.info("[Turn %d] Verifying OJM backend: %s", turn, jm_id)
+                verification = await verify_journey_map(
+                    ojm_api_host, ojm_token, jm_id
+                )
+                turn_record.setdefault("verifications", []).append({
+                    "tool": tc["name"],
+                    "journey_map_id": jm_id,
+                    **verification,
+                })
+                log_fn = logger.info if verification["status"] == "pass" else logger.warning
+                log_fn(
+                    "[Turn %d] OJM verification: %s (nodes=%d, dangling=%d, creative=%d)",
+                    turn, verification["status"],
+                    verification["nodes_checked"],
+                    len(verification["dangling_refs"]),
+                    len(verification["creative_issues"]),
+                )
 
         # Ask controller what to do next (retry with backoff)
         decision = None

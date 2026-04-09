@@ -165,6 +165,8 @@ async def run_one(scenario: dict, cfg, jwt_token: str | None, progress_cb=None, 
             responses=scenario.get("responses"),
             max_turns=scenario.get("max_turns", 30),
             progress_cb=progress_cb,
+            ojm_api_host=cfg.ojm_api_host,
+            ojm_token=jwt_token,
         )
 
         save_result(result, output_dir=output_dir)
