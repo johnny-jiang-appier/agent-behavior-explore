@@ -8,7 +8,7 @@ from collections.abc import Callable
 from config import get_config
 from controller.llm import generate_json
 
-_REVIEW_SEMAPHORE = asyncio.Semaphore(2)
+_REVIEW_SEMAPHORE = asyncio.Semaphore(1)
 
 logger = logging.getLogger(__name__)
 

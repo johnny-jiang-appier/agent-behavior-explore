@@ -10,4 +10,5 @@ dependencies = [
     "PyJWT>=2.8",
     "playwright>=1.49",
     "rich>=13.0",
+    "pytest>=9.0.2",
 ]
